@@ -15,6 +15,7 @@ or via poetry
 git clone https://github.com/aficustree/accesscontroller.git
 cd ./accesscontroller
 poetry install .
+poetry run accesscontroller
 ```
 
 ## Usage

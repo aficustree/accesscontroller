@@ -288,8 +288,8 @@ def main(args=None):
             return returnString
         
         assert(args.server.bit_length() <= 16 and args.server > 0)
-        run(host='localhost',port=args.server, debug=args.debug)
+        run(host='0.0.0.0',port=args.server, debug=args.debug)
 
 if __name__ == '__main__':
-    main(args)
+    main()
     
