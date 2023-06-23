@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "accesscontroller"
+version = "0.0.1"
+description = ""
+authors = ["aficustree <shaun@smbaker.us>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+automationhat = "^0.4.1"
+bottle = "^0.12.25"
+argparse = "^1.4.0"
+asyncio = "^3.4.3"
+rpi-gpio = "^0.7.1"
+smbus = "^1.1.post2"
+
+[tool.poetry.scripts]
+accesscontroller = "accesscontroller.accesscontroller:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
