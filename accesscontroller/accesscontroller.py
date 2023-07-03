@@ -192,39 +192,6 @@ class AccessControl:
     @background
     def _transition_state(self):
         self._transition_state2()
-        lock = self._lock.acquire(blocking=True, timeout=1) #acquire a lock in case there's already a progressing state change notification or another task is already running
-        if not lock:
-            log.debug('transition aborted due to failed lock')
-            return
-        if self._targetDoorState.value != self._currentDoorState.value:
-            log.debug(self._returnState('transition thread detects state mismatch'))
-            possiblyRetry = (self._currentDoorState == AccessControl.CurrentDoorState.STOPPED)
-            if self._targetDoorState == AccessControl.TargetDoorState.CLOSED:
-                self._currentDoorState = AccessControl.CurrentDoorState.CLOSING
-                if self._mqttSvr is not None: self._pushMqttState()
-            elif self._targetDoorState == AccessControl.TargetDoorState.OPEN:
-                self._currentDoorState = AccessControl.CurrentDoorState.OPENING
-                if self._mqttSvr is not None: self._pushMqttState()
-            while True:
-                self.relay.flick()
-                time.sleep(self._expectedDuration)
-                if self._read_input().value == self._targetDoorState.value:
-                    log.debug(self._returnState('transition thread confirms state equality'))
-                    self._currentDoorState = AccessControl.CurrentDoorState(self._targetDoorState)
-                    if self._mqttSvr is not None: self._pushMqttState()
-                    break
-                else:
-                    log.debug(self._returnState('transition state shows mismatch'))
-                    self._currentDoorState = AccessControl.CurrentDoorState.STOPPED 
-                    if self._mqttSvr is not None: self._pushMqttState()
-                    if possiblyRetry:
-                        log.debug(self._returnState('transition state is retrying to clear error'))
-                        possiblyRetry = False
-                    else:
-                        break
-        else:
-            log.debug(self._returnState('transition thread confirms no action'))
-        self._lock.release()
 
     def _transition_state2(self):
         lock = self._lock.acquire(blocking=True, timeout=1) #acquire a lock in case there's already a progressing state change notification or another task is already running
