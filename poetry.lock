@@ -80,6 +80,19 @@ files = [
 ]
 
 [[package]]
+name = "paho-mqtt"
+version = "1.6.1"
+description = "MQTT version 5.0/3.1.1 client class"
+optional = false
+python-versions = "*"
+files = [
+    {file = "paho-mqtt-1.6.1.tar.gz", hash = "sha256:2a8291c81623aec00372b5a85558a372c747cbca8e9934dfe218638b8eefc26f"},
+]
+
+[package.extras]
+proxy = ["PySocks"]
+
+[[package]]
 name = "rpi-gpio"
 version = "0.7.1"
 description = "A module to control Raspberry Pi GPIO channels"
@@ -161,4 +174,4 @@ spidev = ">=3.4"
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.9"
-content-hash = "02899c32a999d13855983239c35d6dc0a08337ca70f42d4bdbf57f3066d35116"
+content-hash = "bceec87d6ce49c15089bc6df3876bf06eed7ba340b3acde83ca5aadebc365e3d"

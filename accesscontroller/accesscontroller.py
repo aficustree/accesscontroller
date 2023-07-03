@@ -23,14 +23,12 @@ from enum import IntEnum, Enum
 import argparse
 import logging
 import time
+from urllib.parse import urlparse
 import asyncio
 from bottle import route, run, abort
 from threading import Lock
-
-parser = argparse.ArgumentParser()
-parser.add_argument("name", nargs="?", default="access controler")
-parser.add_argument("-d", "--debug", action="store_true", default=False)
-parser.add_argument("-s", "--server", type=int)
+import paho.mqtt.publish as mqttpublish
+import paho.mqtt.subscribe as mqttsubscribe
 
 log = logging.getLogger(__name__)
 
@@ -92,9 +90,12 @@ class AccessControl:
 
     @targetDoorState.setter
     def targetDoorState(self, value):
-        assert(value in AccessControl.TargetDoorState)
-        self._targetDoorState = AccessControl.TargetDoorState(value)
-        self._transition_state()
+        try:
+            assert(value in AccessControl.TargetDoorState)
+            self._targetDoorState = AccessControl.TargetDoorState(value)
+            self._transition_state()
+        except Exception as err:
+            log.debug(err)
 
     @property
     def obstructionDetected(self):
@@ -131,6 +132,7 @@ class AccessControl:
             log.debug(self._returnState('detected edge not in conjunction with transition, must be external'))
             self._currentDoorState = AccessControl.CurrentDoorState(self._read_input())
             self._targetDoorState = AccessControl.TargetDoorState(self._read_input())
+            if self._mqttSvr is not None: self._pushMqttState()
             self._lock.release()
         else:
             log.debug(self._returnState('edge detected related to transition'))
@@ -142,9 +144,41 @@ class AccessControl:
             if self._lock.acquire(blocking=False): #resync job, intended to fire every TIMEOUT to resync state in event of power outage or missed event
                 self._currentDoorState = AccessControl.CurrentDoorState(self._read_input())
                 self._targetDoorState = AccessControl.TargetDoorState(self._currentDoorState)
-                self._lock.release()   
-            time.sleep(interval)       
-        
+                if self._mqttSvr is not None: self._pushMqttState()
+                self._lock.release()
+            time.sleep(interval) 
+
+    @background
+    def _awaitMqtt(self):
+        while True:      
+            try:
+                topic = self.name+'/'+'setTargetDoorState'
+                log.debug('awaiting mqtt subscription on topic: '+topic+' on '+self._mqttSvr+':'+str(self._mqttPort))
+                msg = mqttsubscribe.simple(topic,hostname=self._mqttSvr, port=self._mqttPort, client_id=self.name+'_subscriber')
+                msg = msg.payload.decode("utf-8")
+                if msg == 'OPEN':
+                    state = AccessControl.TargetDoorState.OPEN
+                elif msg == 'CLOSED':
+                    state = AccessControl.TargetDoorState.CLOSED
+                log.debug('mqtt change detected, setting state to '+state.name)
+                self._targetDoorState = state
+                self._transition_state2()
+            except Exception as err:
+                log.debug('await except'+err)
+
+    def _pushMqttState(self):
+        try:
+            log.debug(self._returnState('pushing to MQTT'))
+            msg = [{'topic':self.name+'/'+'CurrentDoorState','payload':self._currentDoorState.name},
+                {'topic':self.name+'/'+'TargetDoorState','payload':self._targetDoorState.name},
+                {'topic':self.name+'/'+'ObstructionDetected','payload':self.obstructionDetected}]
+
+            mqttpublish.multiple(msg,hostname=self._mqttSvr,
+                                port=self._mqttPort,
+                                client_id=self.name)
+        except Exception as err:
+            log.debug(self._mqttSvr)
+            log.debug(err)
 
     def _returnState(self, description=""):
         return  {
@@ -157,6 +191,7 @@ class AccessControl:
     
     @background
     def _transition_state(self):
+        self._transition_state2()
         lock = self._lock.acquire(blocking=True, timeout=1) #acquire a lock in case there's already a progressing state change notification or another task is already running
         if not lock:
             log.debug('transition aborted due to failed lock')
@@ -166,29 +201,67 @@ class AccessControl:
             possiblyRetry = (self._currentDoorState == AccessControl.CurrentDoorState.STOPPED)
             if self._targetDoorState == AccessControl.TargetDoorState.CLOSED:
                 self._currentDoorState = AccessControl.CurrentDoorState.CLOSING
+                if self._mqttSvr is not None: self._pushMqttState()
             elif self._targetDoorState == AccessControl.TargetDoorState.OPEN:
                 self._currentDoorState = AccessControl.CurrentDoorState.OPENING
+                if self._mqttSvr is not None: self._pushMqttState()
             while True:
                 self.relay.flick()
                 time.sleep(self._expectedDuration)
                 if self._read_input().value == self._targetDoorState.value:
                     log.debug(self._returnState('transition thread confirms state equality'))
                     self._currentDoorState = AccessControl.CurrentDoorState(self._targetDoorState)
+                    if self._mqttSvr is not None: self._pushMqttState()
                     break
                 else:
                     log.debug(self._returnState('transition state shows mismatch'))
                     self._currentDoorState = AccessControl.CurrentDoorState.STOPPED 
+                    if self._mqttSvr is not None: self._pushMqttState()
                     if possiblyRetry:
                         log.debug(self._returnState('transition state is retrying to clear error'))
                         possiblyRetry = False
                     else:
                         break
-            
+        else:
+            log.debug(self._returnState('transition thread confirms no action'))
+        self._lock.release()
+
+    def _transition_state2(self):
+        lock = self._lock.acquire(blocking=True, timeout=1) #acquire a lock in case there's already a progressing state change notification or another task is already running
+        if not lock:
+            log.debug('transition aborted due to failed lock')
+            return
+        if self._targetDoorState.value != self._currentDoorState.value:
+            log.debug(self._returnState('transition thread detects state mismatch'))
+            possiblyRetry = (self._currentDoorState == AccessControl.CurrentDoorState.STOPPED)
+            if self._targetDoorState == AccessControl.TargetDoorState.CLOSED:
+                self._currentDoorState = AccessControl.CurrentDoorState.CLOSING
+                if self._mqttSvr is not None: self._pushMqttState()
+            elif self._targetDoorState == AccessControl.TargetDoorState.OPEN:
+                self._currentDoorState = AccessControl.CurrentDoorState.OPENING
+                if self._mqttSvr is not None: self._pushMqttState()
+            while True:
+                self.relay.flick()
+                time.sleep(self._expectedDuration)
+                if self._read_input().value == self._targetDoorState.value:
+                    log.debug(self._returnState('transition thread confirms state equality'))
+                    self._currentDoorState = AccessControl.CurrentDoorState(self._targetDoorState)
+                    if self._mqttSvr is not None: self._pushMqttState()
+                    break
+                else:
+                    log.debug(self._returnState('transition state shows mismatch'))
+                    self._currentDoorState = AccessControl.CurrentDoorState.STOPPED 
+                    if self._mqttSvr is not None: self._pushMqttState()
+                    if possiblyRetry:
+                        log.debug(self._returnState('transition state is retrying to clear error'))
+                        possiblyRetry = False
+                    else:
+                        break
         else:
             log.debug(self._returnState('transition thread confirms no action'))
         self._lock.release()
  
-    def __init__(self, name, input, controlRelay, expectedDuration, resistorType = RESISTOR.OFF, flip = False, bounceTime = None):
+    def __init__(self, name, input, controlRelay, expectedDuration, resistorType = RESISTOR.OFF, flip = False, bounceTime = None, mqttSvr = None):
         automationhat.enable_auto_lights(True)
         GPIO.setmode(GPIO.BCM)
           
@@ -207,6 +280,8 @@ class AccessControl:
         self._currentDoorState = AccessControl.CurrentDoorState(self._read_input())
         self._targetDoorState = AccessControl.TargetDoorState(self._currentDoorState)
         self._obstructionDetected = False
+        self._mqttSvr = None
+        self._mqttPort = None
         self._lock = Lock()
 
         GPIO.setup(input.bcmPin, GPIO.IN, pull_up_down=resistorType)
@@ -222,8 +297,25 @@ class AccessControl:
 
         self._resync() #start resync task
 
+        if mqttSvr is not None:
+            mqttUri = urlparse(mqttSvr)
+            if mqttUri.scheme != 'mqtt':
+                raise ValueError('ensure path start with mqtt://')
+            self._mqttSvr = mqttUri.hostname
+            if mqttSvr == '':
+                raise ValueError('mqtt server hostname not set')
+            self._mqttPort = 1883 if mqttUri.port is None else mqttUri.port
+            self._awaitMqtt() #start subscription poller
 
-def main(args=None):
+
+def main():
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("name", nargs="?", default="access controler")
+    parser.add_argument("-d", "--debug", action="store_true", default=False)
+    parser.add_argument("-s", "--server", type=str)
+    parser.add_argument("-m", "--mqtt", type=str)
+
     args = parser.parse_args()
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
@@ -231,12 +323,22 @@ def main(args=None):
         logging.basicConfig(level=logging.INFO)
 
     accessInstances = []
-    garage = AccessControl("garage", AccessControl.INPUT.INPUT1, AccessControl.RELAY.RELAY1, 18, AccessControl.RESISTOR.OFF, True, 200) 
-    gate = AccessControl("gate", AccessControl.INPUT.INPUT2, AccessControl.RELAY.RELAY2, 18, AccessControl.RESISTOR.OFF, True, 200)  
+    garage = AccessControl("garage", AccessControl.INPUT.INPUT1, AccessControl.RELAY.RELAY1, 18, AccessControl.RESISTOR.OFF, True, 200, args.mqtt) 
+    gate = AccessControl("gate", AccessControl.INPUT.INPUT2, AccessControl.RELAY.RELAY2, 18, AccessControl.RESISTOR.OFF, True, 200, args.mqtt)  
     accessInstances.append(garage)
-    accessInstances.append(gate)
+    accessInstances.append(gate)        
 
     if args.server:
+
+        serverUri = urlparse(args.server)
+        if serverUri.netloc == '':
+            args.server = '//' + args.server
+            serverUri = urlparse(args.server)
+
+        if serverUri.scheme == 'http' and serverUri.port is None:
+            serverUri.port = 80
+        if serverUri.scheme == 'https' and serverUri.port is None:
+            serverUri.port = 443
 
         @route('')
         @route('/')
@@ -249,11 +351,12 @@ def main(args=None):
             controller = controller.lower() if controller is not None else None
             state = state.upper() if state is not None else None
             try:
+                returnString = {}
                 if controller is None: #return all controller info
                     if not len(accessInstances) > 0: raise TypeError('no controllers configured')
-                    returnString = {}
                     for x in accessInstances:
                         returnString.update({x.name: x._returnState("webcall")})
+                    return returnString
                 else: #match the controller
                     matches = [x for x in accessInstances if x.name == controller]
                     if not len(matches) == 1: raise TypeError('controller not found or matches more than one')
@@ -285,10 +388,8 @@ def main(args=None):
                 abort(400, err)
             except Exception as err:
                 abort(400, err)
-            return returnString
-        
-        assert(args.server.bit_length() <= 16 and args.server > 0)
-        run(host='0.0.0.0',port=args.server, debug=args.debug)
+            return returnString 
+        run(host=serverUri.hostname,port=serverUri.port, debug=args.debug)
 
 if __name__ == '__main__':
     main()
