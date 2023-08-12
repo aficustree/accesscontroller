@@ -92,7 +92,6 @@ You may use a similar form to return all internal state variables provided case 
 - TODO: Handle case insensitivity for paths
 - TODO: Create CLI
 - TODO: Replace asserts
-- TODO: Add MQTT
 
 ## Contributing
 
